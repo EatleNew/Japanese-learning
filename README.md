@@ -5,19 +5,23 @@
 ## 当前功能
 
 - 按「初级 / 中级」「上册 / 下册」「课次」筛选单词。
-- 浏览词库。
+- 浏览词库，并支持搜索日语、假名、中文和 romaji。
+- 浏览词库支持按课次、假名、日语、中文、错题数排序。
 - 背卡片：显示日语、假名、中文、来源课次和声调位置。
+- 假名声调高亮：浏览和背卡片时，声调范围会在假名上用蓝色底线标出。
+- 罗马音开关：浏览词库、背卡片、五十音图都可以显示或隐藏罗马音。
+- 五十音图：包含清音、浊音、半浊音，显示平假名和片假名。
 - 选择题：看到日语，选择中文。
 - 输入测验：看到中文，输入日语汉字或假名。
 - 今日复习：根据答题结果做简单间隔复习。
 - 本地保存进度：答对、答错、复习到期时间会保存在手机本地。
 
-## 词库来源
+## 词库
 
-当前词库来自本机目录：
+原始单词 JSON 已经放在项目内：
 
 ```text
-C:\Users\Lenovo\Downloads\japanese-main\json
+assets/source-json
 ```
 
 已导入 4936 个词：
@@ -27,28 +31,26 @@ C:\Users\Lenovo\Downloads\japanese-main\json
 - 中级上：1731 个
 - 中级下：1082 个
 
-导入脚本是：
+导入脚本：
 
 ```bash
-node scripts/import-vocabulary.js
+npm run import:vocabulary
 ```
 
-如果以后你更新了 `japanese-main/json` 里的词库，重新运行上面的命令即可生成新的 `src/data/vocabulary.ts`。
+脚本会读取 `assets/source-json/word*.json`，生成 App 使用的 `src/data/vocabulary.ts`。因此换一台电脑运行项目时，不需要再依赖外部下载目录。
 
 ## 本地运行
 
-在项目目录执行：
+建议使用 Node.js `20.19.4` 或更高版本。
 
 ```bash
 npm install
 npm run start
 ```
 
-然后在手机上安装 `Expo Go`，用手机扫终端里的二维码，就能先在手机上试用。
+然后在手机上安装 `Expo Go`，用手机扫描终端里的二维码即可试用。
 
 ## 得到 APK
-
-想得到一个可以直接安装到安卓手机的 APK，推荐用 EAS Build。
 
 先登录 Expo：
 
@@ -59,7 +61,20 @@ npx eas-cli login
 然后构建 APK：
 
 ```bash
-npx eas build -p android --profile preview
+npx eas-cli build -p android --profile preview
 ```
 
-构建完成后，Expo 会给一个下载链接。把 APK 下载到手机上即可安装。
+构建完成后，Expo 会给出 APK 下载链接。下载到手机后安装即可。
+
+## GitHub 留痕方式
+
+建议每个任务都走分支和提交：
+
+```bash
+git checkout -b feature/任务名
+git add .
+git commit -m "说明这次做了什么"
+git push origin feature/任务名
+```
+
+然后在 GitHub 上开 Pull Request。这样 issue、commit、PR、讨论和构建记录都会留在 GitHub 上。

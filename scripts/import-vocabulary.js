@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const sourceDir = process.argv[2] || 'C:/Users/Lenovo/Downloads/japanese-main/json';
+const sourceDir = process.argv[2] || path.resolve(__dirname, '../assets/source-json');
 const outputFile = path.resolve(__dirname, '../src/data/vocabulary.ts');
 const sourceFiles = ['word.json', 'word1.json', 'word2.json', 'word3.json'];
 

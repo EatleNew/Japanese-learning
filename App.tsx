@@ -1,3 +1,4 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { StatusBar } from 'expo-status-bar';
 import type { ReactNode } from 'react';
 import { useEffect, useMemo, useState } from 'react';
@@ -13,11 +14,12 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { basicKanaRows, kanaColumns, markKanaRows, romanizeKana } from './src/data/kana';
 import { vocabulary, type Book, type Level, type VocabularyItem } from './src/data/vocabulary';
 
-type ViewName = 'home' | 'browse' | 'study' | 'quiz' | 'review';
+type ViewName = 'home' | 'browse' | 'study' | 'quiz' | 'review' | 'kana';
 type QuizMode = 'choice' | 'input';
+type SortMode = 'lesson' | 'kana' | 'japanese' | 'meaning' | 'mistakes';
 
 type Progress = {
   correct: number;
@@ -38,6 +40,14 @@ const bookLabel: Record<Book, string> = {
   lower: '下册',
 };
 
+const sortLabel: Record<SortMode, string> = {
+  lesson: '课次',
+  kana: '假名',
+  japanese: '日语',
+  meaning: '中文',
+  mistakes: '错题',
+};
+
 const normalize = (value: string) =>
   value
     .trim()
@@ -53,10 +63,33 @@ const getDelayDays = (correctCount: number) => {
 };
 
 const pickChoices = (target: VocabularyItem) => {
-  const pool = vocabulary.filter((item) => item.id !== target.id);
+  const sameBook = vocabulary.filter((item) => item.id !== target.id && item.level === target.level && item.book === target.book);
+  const pool = sameBook.length >= 3 ? sameBook : vocabulary.filter((item) => item.id !== target.id);
   const shuffled = [...pool].sort(() => Math.random() - 0.5).slice(0, 3);
   return [...shuffled, target].sort(() => Math.random() - 0.5);
 };
+
+const compareText = (a: string, b: string) => a.localeCompare(b, 'ja');
+
+const parseAccentRanges = (accent: string, length: number) => {
+  if (!accent) return [];
+
+  return accent
+    .split('|')
+    .map((part) => part.split(',').map((value) => Number(value)))
+    .filter((range) => range.every((value) => Number.isFinite(value)))
+    .map(([start, end]) => {
+      const safeStart = Math.max(0, Math.min(start, Math.max(length - 1, 0)));
+      const safeEnd = end === undefined ? length - 1 : Math.max(0, Math.min(end, Math.max(length - 1, 0)));
+      return {
+        start: Math.min(safeStart, safeEnd),
+        end: Math.max(safeStart, safeEnd),
+      };
+    });
+};
+
+const isAccentIndex = (index: number, ranges: Array<{ start: number; end: number }>) =>
+  ranges.some((range) => index >= range.start && index <= range.end);
 
 export default function App() {
   const [view, setView] = useState<ViewName>('home');
@@ -68,6 +101,9 @@ export default function App() {
   const [quizMode, setQuizMode] = useState<QuizMode>('choice');
   const [answer, setAnswer] = useState('');
   const [result, setResult] = useState<'correct' | 'wrong' | null>(null);
+  const [search, setSearch] = useState('');
+  const [sortMode, setSortMode] = useState<SortMode>('lesson');
+  const [showRomaji, setShowRomaji] = useState(false);
 
   useEffect(() => {
     AsyncStorage.getItem(STORAGE_KEY)
@@ -94,6 +130,34 @@ export default function App() {
     [book, lesson, level],
   );
 
+  const visibleWords = useMemo(() => {
+    const query = normalize(search);
+    const filtered = query
+      ? selectedWords.filter((item) =>
+          [
+            item.japanese,
+            item.kana,
+            item.meaning,
+            item.raw,
+            item.sourceBook,
+            item.sourceLesson,
+            romanizeKana(item.kana),
+          ].some((value) => normalize(value).includes(query)),
+        )
+      : selectedWords;
+
+    return [...filtered].sort((a, b) => {
+      if (sortMode === 'kana') return compareText(a.kana, b.kana);
+      if (sortMode === 'japanese') return compareText(a.japanese, b.japanese);
+      if (sortMode === 'meaning') return compareText(a.meaning, b.meaning);
+      if (sortMode === 'mistakes') {
+        const wrongDiff = (progress[b.id]?.wrong ?? 0) - (progress[a.id]?.wrong ?? 0);
+        if (wrongDiff !== 0) return wrongDiff;
+      }
+      return a.lesson - b.lesson || compareText(a.kana, b.kana);
+    });
+  }, [progress, search, selectedWords, sortMode]);
+
   const dueWords = useMemo(() => {
     const now = Date.now();
     const due = selectedWords.filter((item) => !progress[item.id] || progress[item.id].dueAt <= now);
@@ -107,9 +171,8 @@ export default function App() {
   const stats = useMemo(() => {
     const seen = vocabulary.filter((item) => progress[item.id]);
     const correct = seen.reduce((sum, item) => sum + (progress[item.id]?.correct ?? 0), 0);
-    const wrong = seen.reduce((sum, item) => sum + (progress[item.id]?.wrong ?? 0), 0);
     const due = vocabulary.filter((item) => !progress[item.id] || progress[item.id].dueAt <= Date.now()).length;
-    return { seen: seen.length, correct, wrong, due };
+    return { seen: seen.length, correct, due };
   }, [progress]);
 
   const lessons = useMemo(() => {
@@ -218,34 +281,63 @@ export default function App() {
                   />
                 ))}
               </ScrollView>
-              <Text style={styles.mutedText}>当前范围有 {selectedWords.length} 个示例词。完整词库会通过可授权数据导入。</Text>
+              <Text style={styles.mutedText}>当前范围有 {selectedWords.length} 个词。</Text>
             </Panel>
 
             <View style={styles.actionGrid}>
-              <Action title="背卡片" detail="看日语、假名、例句" onPress={() => openPractice('study')} />
+              <Action title="背卡片" detail="看日语、假名、声调" onPress={() => openPractice('study')} />
               <Action title="选择题" detail="看到日语选中文" onPress={() => openPractice('quiz', 'choice')} />
               <Action title="输入测验" detail="看到中文输入日语或假名" onPress={() => openPractice('quiz', 'input')} />
               <Action title="今日复习" detail={`${dueWords.length} 个到期词`} onPress={() => openPractice('review', 'input')} />
+              <Action title="五十音图" detail="假名、片假名、罗马音" onPress={() => setView('kana')} />
+              <Action title="浏览词库" detail="搜索、排序、看声调" onPress={() => setView('browse')} />
             </View>
-
-            <Pressable style={styles.secondaryButton} onPress={() => setView('browse')}>
-              <Text style={styles.secondaryButtonText}>浏览词库</Text>
-            </Pressable>
           </ScrollView>
         ) : null}
 
         {view === 'browse' ? (
           <ScrollView contentContainerStyle={styles.content}>
-            {selectedWords.map((item) => (
+            <Panel title="查词">
+              <TextInput
+                autoCapitalize="none"
+                autoCorrect={false}
+                placeholder="搜索日语、假名、中文或 romaji"
+                style={styles.input}
+                value={search}
+                onChangeText={setSearch}
+              />
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.lessonRow}>
+                {(Object.keys(sortLabel) as SortMode[]).map((mode) => (
+                  <Chip
+                    key={mode}
+                    active={sortMode === mode}
+                    label={`按${sortLabel[mode]}`}
+                    onPress={() => setSortMode(mode)}
+                  />
+                ))}
+              </ScrollView>
+              <Pressable style={styles.secondaryButton} onPress={() => setShowRomaji((value) => !value)}>
+                <Text style={styles.secondaryButtonText}>{showRomaji ? '隐藏罗马音' : '显示罗马音'}</Text>
+              </Pressable>
+              <Text style={styles.mutedText}>
+                找到 {visibleWords.length} / {selectedWords.length} 个词。假名中的蓝色底线表示词库给出的声调范围。
+              </Text>
+            </Panel>
+
+            {visibleWords.map((item) => (
               <View key={item.id} style={styles.wordRow}>
                 <View style={styles.wordMain}>
                   <Text style={styles.word}>{item.japanese}</Text>
-                  <Text style={styles.kana}>{item.kana}</Text>
+                  <AccentKana value={item.kana} accent={item.accent} showRomaji={showRomaji} />
                 </View>
                 <View style={styles.wordMeta}>
                   <Text style={styles.meaning}>{item.meaning}</Text>
                   <Text style={styles.mutedText}>
                     {levelLabel[item.level]} {bookLabel[item.book]} 第{item.lesson}课
+                    {item.accent ? ` · 声调 ${item.accent}` : ''}
+                  </Text>
+                  <Text style={styles.mutedText}>
+                    已对 {progress[item.id]?.correct ?? 0} · 错 {progress[item.id]?.wrong ?? 0}
                   </Text>
                 </View>
               </View>
@@ -253,16 +345,32 @@ export default function App() {
           </ScrollView>
         ) : null}
 
+        {view === 'kana' ? (
+          <ScrollView contentContainerStyle={styles.content}>
+            <Panel title="五十音图">
+              <Pressable style={styles.secondaryButton} onPress={() => setShowRomaji((value) => !value)}>
+                <Text style={styles.secondaryButtonText}>{showRomaji ? '隐藏罗马音' : '显示罗马音'}</Text>
+              </Pressable>
+              <Text style={styles.mutedText}>每格上方是假名，下方是片假名。打开罗马音后会显示读音。</Text>
+            </Panel>
+            <KanaTable title="清音" rows={basicKanaRows} showRomaji={showRomaji} />
+            <KanaTable title="浊音 / 半浊音" rows={markKanaRows} showRomaji={showRomaji} />
+          </ScrollView>
+        ) : null}
+
         {view === 'study' && currentWord ? (
           <PracticeShell deck={currentDeck} currentIndex={currentIndex}>
             <Text style={styles.cardJapanese}>{currentWord.japanese}</Text>
-            <Text style={styles.cardKana}>{currentWord.kana}</Text>
+            <AccentKana value={currentWord.kana} accent={currentWord.accent} showRomaji={showRomaji} large />
             <Text style={styles.cardMeaning}>{currentWord.meaning}</Text>
             <View style={styles.exampleBox}>
               <Text style={styles.example}>{currentWord.raw}</Text>
               <Text style={styles.mutedText}>{currentWord.sourceBook} · {currentWord.sourceLesson}</Text>
               {currentWord.accent ? <Text style={styles.mutedText}>声调位置：{currentWord.accent}</Text> : null}
             </View>
+            <Pressable style={styles.secondaryButton} onPress={() => setShowRomaji((value) => !value)}>
+              <Text style={styles.secondaryButtonText}>{showRomaji ? '隐藏罗马音' : '显示罗马音'}</Text>
+            </Pressable>
             <View style={styles.twoButtons}>
               <Pressable
                 style={[styles.answerButton, styles.wrongButton]}
@@ -292,7 +400,7 @@ export default function App() {
               <>
                 <Text style={styles.prompt}>这个词是什么意思？</Text>
                 <Text style={styles.cardJapanese}>{currentWord.japanese}</Text>
-                <Text style={styles.cardKana}>{currentWord.kana}</Text>
+                <AccentKana value={currentWord.kana} accent={currentWord.accent} showRomaji={showRomaji} large />
                 <View style={styles.choiceList}>
                   {choices.map((item) => (
                     <Pressable
@@ -333,6 +441,7 @@ export default function App() {
                 <Text style={styles.resultDetail}>
                   {currentWord.japanese} · {currentWord.kana} · {currentWord.meaning}
                 </Text>
+                {currentWord.accent ? <Text style={styles.resultDetail}>声调位置：{currentWord.accent}</Text> : null}
                 <Pressable style={styles.nextButton} onPress={moveNext}>
                   <Text style={styles.nextButtonText}>下一题</Text>
                 </Pressable>
@@ -342,6 +451,68 @@ export default function App() {
         ) : null}
       </KeyboardAvoidingView>
     </SafeAreaView>
+  );
+}
+
+function AccentKana({
+  accent,
+  large = false,
+  showRomaji,
+  value,
+}: {
+  accent: string;
+  large?: boolean;
+  showRomaji: boolean;
+  value: string;
+}) {
+  const chars = Array.from(value);
+  const ranges = parseAccentRanges(accent, chars.length);
+
+  return (
+    <View style={large ? styles.accentLargeWrap : styles.accentWrap}>
+      <Text style={large ? styles.cardKana : styles.kana}>
+        {chars.map((char, index) => (
+          <Text key={`${char}-${index}`} style={isAccentIndex(index, ranges) ? styles.kanaAccent : undefined}>
+            {char}
+          </Text>
+        ))}
+      </Text>
+      {showRomaji ? <Text style={large ? styles.romajiLarge : styles.romaji}>{romanizeKana(value)}</Text> : null}
+    </View>
+  );
+}
+
+function KanaTable({ rows, showRomaji, title }: { rows: typeof basicKanaRows; showRomaji: boolean; title: string }) {
+  return (
+    <View style={styles.panel}>
+      <Text style={styles.panelTitle}>{title}</Text>
+      <View style={styles.kanaHeaderRow}>
+        <Text style={styles.kanaRowLabel} />
+        {kanaColumns.map((column) => (
+          <Text key={column} style={styles.kanaColumnLabel}>
+            {column}
+          </Text>
+        ))}
+      </View>
+      {rows.map((row) => (
+        <View key={row.label} style={styles.kanaTableRow}>
+          <Text style={styles.kanaRowLabel}>{row.label}</Text>
+          {row.cells.map((cell, index) => (
+            <View key={`${row.label}-${index}`} style={styles.kanaCell}>
+              {cell ? (
+                <>
+                  <Text style={styles.kanaCellMain}>{cell.hiragana}</Text>
+                  <Text style={styles.kanaCellSub}>{cell.katakana}</Text>
+                  {showRomaji ? <Text style={styles.kanaCellRomaji}>{cell.romaji}</Text> : null}
+                </>
+              ) : (
+                <Text style={styles.kanaCellEmpty}>-</Text>
+              )}
+            </View>
+          ))}
+        </View>
+      ))}
+    </View>
   );
 }
 
@@ -426,6 +597,13 @@ function PracticeShell({
 }
 
 const styles = StyleSheet.create({
+  accentLargeWrap: {
+    alignItems: 'center',
+    gap: 4,
+  },
+  accentWrap: {
+    gap: 2,
+  },
   action: {
     backgroundColor: '#FFFFFF',
     borderColor: '#DDE3EA',
@@ -478,7 +656,6 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: '700',
     lineHeight: 34,
-    marginTop: 8,
     textAlign: 'center',
   },
   cardMeaning: {
@@ -543,7 +720,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#F7F7F5',
     borderRadius: 8,
     gap: 6,
-    marginTop: 22,
+    marginTop: 10,
     padding: 14,
   },
   header: {
@@ -575,15 +752,75 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     borderWidth: 1,
     color: '#111827',
-    fontSize: 20,
-    minHeight: 54,
+    fontSize: 18,
+    minHeight: 52,
     paddingHorizontal: 14,
   },
   kana: {
     color: '#2563EB',
     fontSize: 15,
     fontWeight: '700',
+    lineHeight: 22,
+  },
+  kanaAccent: {
+    backgroundColor: '#DBEAFE',
+    color: '#1D4ED8',
+    textDecorationLine: 'underline',
+  },
+  kanaCell: {
+    alignItems: 'center',
+    backgroundColor: '#F8FAFC',
+    borderColor: '#E1E6ED',
+    borderRadius: 8,
+    borderWidth: 1,
+    flex: 1,
+    justifyContent: 'center',
+    minHeight: 68,
+    paddingVertical: 6,
+  },
+  kanaCellEmpty: {
+    color: '#A0A8B3',
+    fontSize: 18,
+  },
+  kanaCellMain: {
+    color: '#111827',
+    fontSize: 22,
+    fontWeight: '800',
+    lineHeight: 28,
+  },
+  kanaCellRomaji: {
+    color: '#2563EB',
+    fontSize: 11,
+    fontWeight: '700',
+    lineHeight: 15,
+  },
+  kanaCellSub: {
+    color: '#4B5563',
+    fontSize: 15,
+    fontWeight: '700',
     lineHeight: 20,
+  },
+  kanaColumnLabel: {
+    color: '#667085',
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+  kanaHeaderRow: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  kanaRowLabel: {
+    color: '#111827',
+    fontSize: 12,
+    fontWeight: '800',
+    width: 38,
+  },
+  kanaTableRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 6,
   },
   lessonRow: {
     gap: 8,
@@ -680,6 +917,19 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '800',
   },
+  romaji: {
+    color: '#667085',
+    fontSize: 12,
+    fontWeight: '700',
+    lineHeight: 16,
+  },
+  romajiLarge: {
+    color: '#667085',
+    fontSize: 14,
+    fontWeight: '700',
+    lineHeight: 20,
+    textAlign: 'center',
+  },
   safe: {
     backgroundColor: '#F3F5F7',
     flex: 1,
@@ -771,7 +1021,7 @@ const styles = StyleSheet.create({
     lineHeight: 30,
   },
   wordMain: {
-    width: 104,
+    width: 112,
   },
   wordMeta: {
     flex: 1,
