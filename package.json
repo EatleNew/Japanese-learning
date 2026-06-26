@@ -2,7 +2,11 @@
   "name": "japanese-learning",
   "version": "1.0.0",
   "main": "index.ts",
+  "engines": {
+    "node": ">=20.19.4"
+  },
   "dependencies": {
+    "@react-native-async-storage/async-storage": "^2.2.0",
     "expo": "~56.0.12",
     "expo-status-bar": "~56.0.4",
     "react": "19.2.3",

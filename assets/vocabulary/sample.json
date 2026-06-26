@@ -1,0 +1,14 @@
+[
+  {
+    "id": "b-u-01-001",
+    "level": "beginner",
+    "book": "upper",
+    "lesson": 1,
+    "japanese": "学生",
+    "kana": "がくせい",
+    "meaning": "学生",
+    "partOfSpeech": "名词",
+    "example": "わたしは学生です。",
+    "exampleMeaning": "我是学生。"
+  }
+]

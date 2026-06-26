@@ -1,0 +1,27 @@
+name: Vocabulary import
+description: Track a licensed or user-owned vocabulary import.
+title: "[Vocabulary] "
+labels: ["vocabulary"]
+body:
+  - type: input
+    id: source
+    attributes:
+      label: Source
+      description: Link or local source for the data.
+    validations:
+      required: true
+  - type: dropdown
+    id: license
+    attributes:
+      label: License status
+      options:
+        - User-owned
+        - Clearly open licensed
+        - Needs review
+    validations:
+      required: true
+  - type: textarea
+    id: mapping
+    attributes:
+      label: Mapping notes
+      description: Explain how source columns map to app fields.

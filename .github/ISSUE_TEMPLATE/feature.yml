@@ -1,0 +1,25 @@
+name: Feature
+description: Track a new app feature or learning workflow.
+title: "[Feature] "
+labels: ["feature"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What should the learner be able to do?
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: What is included in this first pass?
+    validations:
+      required: true
+  - type: textarea
+    id: checks
+    attributes:
+      label: Acceptance checks
+      description: How do we know this is done?
+      placeholder: "- User can ..."
