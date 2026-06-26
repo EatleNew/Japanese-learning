@@ -14,24 +14,10 @@ import {
   View,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { vocabulary, type Book, type Level, type VocabularyItem } from './src/data/vocabulary';
 
-type Level = 'beginner' | 'intermediate';
-type Book = 'upper' | 'lower';
 type ViewName = 'home' | 'browse' | 'study' | 'quiz' | 'review';
 type QuizMode = 'choice' | 'input';
-
-type VocabularyItem = {
-  id: string;
-  level: Level;
-  book: Book;
-  lesson: number;
-  japanese: string;
-  kana: string;
-  meaning: string;
-  partOfSpeech: string;
-  example: string;
-  exampleMeaning: string;
-};
 
 type Progress = {
   correct: number;
@@ -41,129 +27,6 @@ type Progress = {
 };
 
 const STORAGE_KEY = 'jp-learning-progress-v1';
-
-const vocabulary: VocabularyItem[] = [
-  {
-    id: 'b-u-01-01',
-    level: 'beginner',
-    book: 'upper',
-    lesson: 1,
-    japanese: '学生',
-    kana: 'がくせい',
-    meaning: '学生',
-    partOfSpeech: '名词',
-    example: 'わたしは学生です。',
-    exampleMeaning: '我是学生。',
-  },
-  {
-    id: 'b-u-01-02',
-    level: 'beginner',
-    book: 'upper',
-    lesson: 1,
-    japanese: '会社員',
-    kana: 'かいしゃいん',
-    meaning: '公司职员',
-    partOfSpeech: '名词',
-    example: '父は会社員です。',
-    exampleMeaning: '我父亲是公司职员。',
-  },
-  {
-    id: 'b-u-02-01',
-    level: 'beginner',
-    book: 'upper',
-    lesson: 2,
-    japanese: '本',
-    kana: 'ほん',
-    meaning: '书',
-    partOfSpeech: '名词',
-    example: 'これは日本語の本です。',
-    exampleMeaning: '这是日语书。',
-  },
-  {
-    id: 'b-u-02-02',
-    level: 'beginner',
-    book: 'upper',
-    lesson: 2,
-    japanese: '辞書',
-    kana: 'じしょ',
-    meaning: '词典',
-    partOfSpeech: '名词',
-    example: '辞書を使います。',
-    exampleMeaning: '使用词典。',
-  },
-  {
-    id: 'b-l-05-01',
-    level: 'beginner',
-    book: 'lower',
-    lesson: 5,
-    japanese: '行きます',
-    kana: 'いきます',
-    meaning: '去',
-    partOfSpeech: '动词',
-    example: '明日、学校へ行きます。',
-    exampleMeaning: '明天去学校。',
-  },
-  {
-    id: 'b-l-05-02',
-    level: 'beginner',
-    book: 'lower',
-    lesson: 5,
-    japanese: '帰ります',
-    kana: 'かえります',
-    meaning: '回来；回去',
-    partOfSpeech: '动词',
-    example: '六時に家へ帰ります。',
-    exampleMeaning: '六点回家。',
-  },
-  {
-    id: 'i-u-01-01',
-    level: 'intermediate',
-    book: 'upper',
-    lesson: 1,
-    japanese: '経験',
-    kana: 'けいけん',
-    meaning: '经验；经历',
-    partOfSpeech: '名词',
-    example: '旅行の経験を話します。',
-    exampleMeaning: '讲述旅行的经历。',
-  },
-  {
-    id: 'i-u-01-02',
-    level: 'intermediate',
-    book: 'upper',
-    lesson: 1,
-    japanese: '比べます',
-    kana: 'くらべます',
-    meaning: '比较',
-    partOfSpeech: '动词',
-    example: '二つの答えを比べます。',
-    exampleMeaning: '比较两个答案。',
-  },
-  {
-    id: 'i-l-02-01',
-    level: 'intermediate',
-    book: 'lower',
-    lesson: 2,
-    japanese: '環境',
-    kana: 'かんきょう',
-    meaning: '环境',
-    partOfSpeech: '名词',
-    example: '環境について考えます。',
-    exampleMeaning: '思考环境问题。',
-  },
-  {
-    id: 'i-l-02-02',
-    level: 'intermediate',
-    book: 'lower',
-    lesson: 2,
-    japanese: '増えます',
-    kana: 'ふえます',
-    meaning: '增加',
-    partOfSpeech: '动词',
-    example: '日本語を勉強する人が増えています。',
-    exampleMeaning: '学习日语的人正在增加。',
-  },
-];
 
 const levelLabel: Record<Level, string> = {
   beginner: '初级',
@@ -382,7 +245,7 @@ export default function App() {
                 <View style={styles.wordMeta}>
                   <Text style={styles.meaning}>{item.meaning}</Text>
                   <Text style={styles.mutedText}>
-                    {levelLabel[item.level]} {bookLabel[item.book]} 第{item.lesson}课 · {item.partOfSpeech}
+                    {levelLabel[item.level]} {bookLabel[item.book]} 第{item.lesson}课
                   </Text>
                 </View>
               </View>
@@ -396,8 +259,9 @@ export default function App() {
             <Text style={styles.cardKana}>{currentWord.kana}</Text>
             <Text style={styles.cardMeaning}>{currentWord.meaning}</Text>
             <View style={styles.exampleBox}>
-              <Text style={styles.example}>{currentWord.example}</Text>
-              <Text style={styles.mutedText}>{currentWord.exampleMeaning}</Text>
+              <Text style={styles.example}>{currentWord.raw}</Text>
+              <Text style={styles.mutedText}>{currentWord.sourceBook} · {currentWord.sourceLesson}</Text>
+              {currentWord.accent ? <Text style={styles.mutedText}>声调位置：{currentWord.accent}</Text> : null}
             </View>
             <View style={styles.twoButtons}>
               <Pressable
