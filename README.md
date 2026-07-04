@@ -65,16 +65,3 @@ npx eas-cli build -p android --profile preview
 ```
 
 构建完成后，Expo 会给出 APK 下载链接。下载到手机后安装即可。
-
-## GitHub 留痕方式
-
-建议每个任务都走分支和提交：
-
-```bash
-git checkout -b feature/任务名
-git add .
-git commit -m "说明这次做了什么"
-git push origin feature/任务名
-```
-
-然后在 GitHub 上开 Pull Request。这样 issue、commit、PR、讨论和构建记录都会留在 GitHub 上。
