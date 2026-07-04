@@ -4,6 +4,7 @@ import type { ReactNode } from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
+  FlatList,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -13,6 +14,7 @@ import {
   Text,
   TextInput,
   View,
+  type ListRenderItemInfo,
 } from 'react-native';
 import { basicKanaRows, kanaColumns, markKanaRows, romanizeKana } from './src/data/kana';
 import { vocabulary, type Book, type Level, type VocabularyItem } from './src/data/vocabulary';
@@ -104,6 +106,8 @@ export default function App() {
   const [search, setSearch] = useState('');
   const [sortMode, setSortMode] = useState<SortMode>('lesson');
   const [showRomaji, setShowRomaji] = useState(false);
+  const [progressLoaded, setProgressLoaded] = useState(false);
+  const sortProgress = sortMode === 'mistakes' ? progress : undefined;
 
   useEffect(() => {
     AsyncStorage.getItem(STORAGE_KEY)
@@ -112,12 +116,21 @@ export default function App() {
       })
       .catch(() => {
         Alert.alert('读取进度失败', '本次会先用临时进度继续。');
+      })
+      .finally(() => {
+        setProgressLoaded(true);
       });
   }, []);
 
   useEffect(() => {
-    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(progress)).catch(() => undefined);
-  }, [progress]);
+    if (!progressLoaded) return undefined;
+
+    const handle = setTimeout(() => {
+      AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(progress)).catch(() => undefined);
+    }, 250);
+
+    return () => clearTimeout(handle);
+  }, [progress, progressLoaded]);
 
   const selectedWords = useMemo(
     () =>
@@ -156,23 +169,25 @@ export default function App() {
       }
       return a.lesson - b.lesson || compareText(a.kana, b.kana);
     });
-  }, [progress, search, selectedWords, sortMode]);
+  }, [search, selectedWords, sortMode, sortProgress]);
 
   const dueWords = useMemo(() => {
+    if (view !== 'home' && view !== 'review') return selectedWords;
+
     const now = Date.now();
     const due = selectedWords.filter((item) => !progress[item.id] || progress[item.id].dueAt <= now);
     return due.length > 0 ? due : selectedWords;
-  }, [progress, selectedWords]);
+  }, [progress, selectedWords, view]);
 
   const currentDeck = view === 'review' ? dueWords : selectedWords;
   const currentWord = currentDeck[currentIndex % Math.max(currentDeck.length, 1)];
   const choices = useMemo(() => (currentWord ? pickChoices(currentWord) : []), [currentWord]);
 
   const stats = useMemo(() => {
-    const seen = vocabulary.filter((item) => progress[item.id]);
-    const correct = seen.reduce((sum, item) => sum + (progress[item.id]?.correct ?? 0), 0);
-    const due = vocabulary.filter((item) => !progress[item.id] || progress[item.id].dueAt <= Date.now()).length;
-    return { seen: seen.length, correct, due };
+    const entries = Object.values(progress);
+    const correct = entries.reduce((sum, item) => sum + item.correct, 0);
+    const learnedFuture = entries.filter((item) => item.dueAt > Date.now()).length;
+    return { seen: entries.length, correct, due: vocabulary.length - learnedFuture };
   }, [progress]);
 
   const lessons = useMemo(() => {
@@ -296,53 +311,49 @@ export default function App() {
         ) : null}
 
         {view === 'browse' ? (
-          <ScrollView contentContainerStyle={styles.content}>
-            <Panel title="查词">
-              <TextInput
-                autoCapitalize="none"
-                autoCorrect={false}
-                placeholder="搜索日语、假名、中文或 romaji"
-                style={styles.input}
-                value={search}
-                onChangeText={setSearch}
-              />
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.lessonRow}>
-                {(Object.keys(sortLabel) as SortMode[]).map((mode) => (
-                  <Chip
-                    key={mode}
-                    active={sortMode === mode}
-                    label={`按${sortLabel[mode]}`}
-                    onPress={() => setSortMode(mode)}
-                  />
-                ))}
-              </ScrollView>
-              <Pressable style={styles.secondaryButton} onPress={() => setShowRomaji((value) => !value)}>
-                <Text style={styles.secondaryButtonText}>{showRomaji ? '隐藏罗马音' : '显示罗马音'}</Text>
-              </Pressable>
-              <Text style={styles.mutedText}>
-                找到 {visibleWords.length} / {selectedWords.length} 个词。假名中的蓝色底线表示词库给出的声调范围。
-              </Text>
-            </Panel>
-
-            {visibleWords.map((item) => (
-              <View key={item.id} style={styles.wordRow}>
-                <View style={styles.wordMain}>
-                  <Text style={styles.word}>{item.japanese}</Text>
-                  <AccentKana value={item.kana} accent={item.accent} showRomaji={showRomaji} />
-                </View>
-                <View style={styles.wordMeta}>
-                  <Text style={styles.meaning}>{item.meaning}</Text>
-                  <Text style={styles.mutedText}>
-                    {levelLabel[item.level]} {bookLabel[item.book]} 第{item.lesson}课
-                    {item.accent ? ` · 声调 ${item.accent}` : ''}
-                  </Text>
-                  <Text style={styles.mutedText}>
-                    已对 {progress[item.id]?.correct ?? 0} · 错 {progress[item.id]?.wrong ?? 0}
-                  </Text>
-                </View>
-              </View>
-            ))}
-          </ScrollView>
+          <FlatList
+            contentContainerStyle={styles.content}
+            data={visibleWords}
+            extraData={{ progress, showRomaji }}
+            initialNumToRender={12}
+            keyboardShouldPersistTaps="handled"
+            keyExtractor={(item) => item.id}
+            maxToRenderPerBatch={12}
+            removeClippedSubviews
+            renderItem={({ item }: ListRenderItemInfo<VocabularyItem>) => (
+              <VocabularyRow item={item} progress={progress[item.id]} showRomaji={showRomaji} />
+            )}
+            updateCellsBatchingPeriod={30}
+            windowSize={9}
+            ListHeaderComponent={
+              <Panel title="查词">
+                <TextInput
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  placeholder="搜索日语、假名、中文或 romaji"
+                  style={styles.input}
+                  value={search}
+                  onChangeText={setSearch}
+                />
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.lessonRow}>
+                  {(Object.keys(sortLabel) as SortMode[]).map((mode) => (
+                    <Chip
+                      key={mode}
+                      active={sortMode === mode}
+                      label={`按${sortLabel[mode]}`}
+                      onPress={() => setSortMode(mode)}
+                    />
+                  ))}
+                </ScrollView>
+                <Pressable style={styles.secondaryButton} onPress={() => setShowRomaji((value) => !value)}>
+                  <Text style={styles.secondaryButtonText}>{showRomaji ? '隐藏罗马音' : '显示罗马音'}</Text>
+                </Pressable>
+                <Text style={styles.mutedText}>
+                  找到 {visibleWords.length} / {selectedWords.length} 个词。假名中的蓝色底线表示词库给出的声调范围。
+                </Text>
+              </Panel>
+            }
+          />
         ) : null}
 
         {view === 'kana' ? (
@@ -478,6 +489,35 @@ function AccentKana({
         ))}
       </Text>
       {showRomaji ? <Text style={large ? styles.romajiLarge : styles.romaji}>{romanizeKana(value)}</Text> : null}
+    </View>
+  );
+}
+
+function VocabularyRow({
+  item,
+  progress,
+  showRomaji,
+}: {
+  item: VocabularyItem;
+  progress?: Progress;
+  showRomaji: boolean;
+}) {
+  return (
+    <View style={styles.wordRow}>
+      <View style={styles.wordMain}>
+        <Text style={styles.word}>{item.japanese}</Text>
+        <AccentKana value={item.kana} accent={item.accent} showRomaji={showRomaji} />
+      </View>
+      <View style={styles.wordMeta}>
+        <Text style={styles.meaning}>{item.meaning}</Text>
+        <Text style={styles.mutedText}>
+          {levelLabel[item.level]} {bookLabel[item.book]} 第{item.lesson}课
+          {item.accent ? ` · 声调 ${item.accent}` : ''}
+        </Text>
+        <Text style={styles.mutedText}>
+          已对 {progress?.correct ?? 0} · 错 {progress?.wrong ?? 0}
+        </Text>
+      </View>
     </View>
   );
 }
