@@ -24,6 +24,7 @@ type ViewName = 'home' | 'browse' | 'study' | 'quiz' | 'review' | 'kana';
 type QuizMode = 'choice' | 'input';
 type SortMode = 'lesson' | 'kana' | 'japanese' | 'meaning' | 'mistakes';
 type Familiarity = 'red' | 'yellow' | 'green';
+type FamiliarityFilter = Familiarity | 'untagged';
 
 type Progress = {
   correct: number;
@@ -62,6 +63,14 @@ const familiarityOptions: Array<{
   { value: 'yellow', label: '不太熟', color: '#D97706' },
   { value: 'green', label: '完全熟', color: '#16A34A' },
 ];
+
+const familiarityFilterOptions: Array<{
+  color: string;
+  label: string;
+  value: FamiliarityFilter;
+}> = [{ value: 'untagged', label: '未标记', color: '#6B7280' }, ...familiarityOptions];
+
+const allFamiliarityFilters: FamiliarityFilter[] = familiarityFilterOptions.map((option) => option.value);
 
 const normalize = (value: string) =>
   value
@@ -106,6 +115,9 @@ const parseAccentRanges = (accent: string, length: number) => {
 const isAccentIndex = (index: number, ranges: Array<{ start: number; end: number }>) =>
   ranges.some((range) => index >= range.start && index <= range.end);
 
+const familiarityKey = (item: VocabularyItem, progress: Record<string, Progress>): FamiliarityFilter =>
+  progress[item.id]?.familiarity ?? 'untagged';
+
 export default function App() {
   const [view, setView] = useState<ViewName>('home');
   const [level, setLevel] = useState<Level>('beginner');
@@ -120,6 +132,8 @@ export default function App() {
   const [sortMode, setSortMode] = useState<SortMode>('lesson');
   const [showRomaji, setShowRomaji] = useState(false);
   const [progressLoaded, setProgressLoaded] = useState(false);
+  const [practiceFamiliarities, setPracticeFamiliarities] =
+    useState<FamiliarityFilter[]>(allFamiliarityFilters);
   const sortProgress = sortMode === 'mistakes' ? progress : undefined;
 
   useEffect(() => {
@@ -184,15 +198,21 @@ export default function App() {
     });
   }, [search, selectedWords, sortMode, sortProgress]);
 
+  const practiceWords = useMemo(() => {
+    if (practiceFamiliarities.length === allFamiliarityFilters.length) return selectedWords;
+
+    return selectedWords.filter((item) => practiceFamiliarities.includes(familiarityKey(item, progress)));
+  }, [practiceFamiliarities, progress, selectedWords]);
+
   const dueWords = useMemo(() => {
-    if (view !== 'home' && view !== 'review') return selectedWords;
+    if (view !== 'home' && view !== 'review') return practiceWords;
 
     const now = Date.now();
-    const due = selectedWords.filter((item) => !progress[item.id] || progress[item.id].dueAt <= now);
-    return due.length > 0 ? due : selectedWords;
-  }, [progress, selectedWords, view]);
+    const due = practiceWords.filter((item) => !progress[item.id] || progress[item.id].dueAt <= now);
+    return due.length > 0 ? due : practiceWords;
+  }, [practiceWords, progress, view]);
 
-  const currentDeck = view === 'review' ? dueWords : selectedWords;
+  const currentDeck = view === 'review' ? dueWords : practiceWords;
   const currentWord = currentDeck[currentIndex % Math.max(currentDeck.length, 1)];
   const choices = useMemo(() => (currentWord ? pickChoices(currentWord) : []), [currentWord]);
 
@@ -209,6 +229,21 @@ export default function App() {
       .map((item) => item.lesson);
     return Array.from(new Set(values)).sort((a, b) => a - b);
   }, [book, level]);
+
+  const familiarityCounts = useMemo(() => {
+    const counts: Record<FamiliarityFilter, number> = {
+      green: 0,
+      red: 0,
+      untagged: 0,
+      yellow: 0,
+    };
+
+    selectedWords.forEach((item) => {
+      counts[familiarityKey(item, progress)] += 1;
+    });
+
+    return counts;
+  }, [progress, selectedWords]);
 
   const saveAnswer = (word: VocabularyItem, isCorrect: boolean) => {
     setProgress((old) => {
@@ -243,6 +278,27 @@ export default function App() {
     });
   };
 
+  const resetPracticeState = () => {
+    setAnswer('');
+    setCurrentIndex(0);
+    setResult(null);
+  };
+
+  const selectAllFamiliarities = () => {
+    resetPracticeState();
+    setPracticeFamiliarities(allFamiliarityFilters);
+  };
+
+  const togglePracticeFamiliarity = (target: FamiliarityFilter) => {
+    resetPracticeState();
+    setPracticeFamiliarities((old) => {
+      if (old.length === allFamiliarityFilters.length) return [target];
+
+      const next = old.includes(target) ? old.filter((item) => item !== target) : [...old, target];
+      return next.length > 0 ? next : allFamiliarityFilters;
+    });
+  };
+
   const moveNext = () => {
     setAnswer('');
     setResult(null);
@@ -265,6 +321,9 @@ export default function App() {
     setResult(null);
     setView(targetView);
   };
+
+  const allFamiliaritiesSelected = practiceFamiliarities.length === allFamiliarityFilters.length;
+  const isPracticeView = view === 'study' || view === 'quiz' || view === 'review';
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -324,7 +383,23 @@ export default function App() {
                   />
                 ))}
               </ScrollView>
-              <Text style={styles.mutedText}>当前范围有 {selectedWords.length} 个词。</Text>
+              <View style={styles.filterBlock}>
+                <Text style={styles.filterTitle}>练习标签</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.lessonRow}>
+                  <Chip active={allFamiliaritiesSelected} label="全部" onPress={selectAllFamiliarities} />
+                  {familiarityFilterOptions.map((option) => (
+                    <Chip
+                      key={option.value}
+                      active={!allFamiliaritiesSelected && practiceFamiliarities.includes(option.value)}
+                      label={`${option.label} ${familiarityCounts[option.value]}`}
+                      onPress={() => togglePracticeFamiliarity(option.value)}
+                    />
+                  ))}
+                </ScrollView>
+              </View>
+              <Text style={styles.mutedText}>
+                当前范围有 {selectedWords.length} 个词，练习筛选后有 {practiceWords.length} 个词。
+              </Text>
             </Panel>
 
             <View style={styles.actionGrid}>
@@ -496,6 +571,14 @@ export default function App() {
               </View>
             ) : null}
           </PracticeShell>
+        ) : null}
+
+        {isPracticeView && !currentWord ? (
+          <ScrollView contentContainerStyle={styles.content}>
+            <Panel title="当前没有可练习的词">
+              <Text style={styles.mutedText}>请调整教材、课次或练习标签筛选。</Text>
+            </Panel>
+          </ScrollView>
         ) : null}
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -841,6 +924,15 @@ const styles = StyleSheet.create({
     gap: 6,
     marginTop: 10,
     padding: 14,
+  },
+  filterBlock: {
+    gap: 8,
+    marginTop: 4,
+  },
+  filterTitle: {
+    color: '#111827',
+    fontSize: 15,
+    fontWeight: '800',
   },
   header: {
     alignItems: 'center',
