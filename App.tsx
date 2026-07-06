@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { StatusBar } from 'expo-status-bar';
+import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
 import type { ReactNode } from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import {
@@ -13,6 +13,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  StatusBar as RNStatusBar,
   View,
   type ListRenderItemInfo,
 } from 'react-native';
@@ -22,11 +23,13 @@ import { vocabulary, type Book, type Level, type VocabularyItem } from './src/da
 type ViewName = 'home' | 'browse' | 'study' | 'quiz' | 'review' | 'kana';
 type QuizMode = 'choice' | 'input';
 type SortMode = 'lesson' | 'kana' | 'japanese' | 'meaning' | 'mistakes';
+type Familiarity = 'red' | 'yellow' | 'green';
 
 type Progress = {
   correct: number;
   wrong: number;
   dueAt: number;
+  familiarity?: Familiarity;
   lastSeenAt?: number;
 };
 
@@ -49,6 +52,16 @@ const sortLabel: Record<SortMode, string> = {
   meaning: '中文',
   mistakes: '错题',
 };
+
+const familiarityOptions: Array<{
+  color: string;
+  label: string;
+  value: Familiarity;
+}> = [
+  { value: 'red', label: '不熟', color: '#DC2626' },
+  { value: 'yellow', label: '不太熟', color: '#D97706' },
+  { value: 'green', label: '完全熟', color: '#16A34A' },
+];
 
 const normalize = (value: string) =>
   value
@@ -206,9 +219,24 @@ export default function App() {
       return {
         ...old,
         [word.id]: {
+          ...previous,
           correct: nextCorrect,
           wrong: nextWrong,
           dueAt: Date.now() + delayDays * 24 * 60 * 60 * 1000,
+          lastSeenAt: Date.now(),
+        },
+      };
+    });
+  };
+
+  const setWordFamiliarity = (word: VocabularyItem, familiarity: Familiarity) => {
+    setProgress((old) => {
+      const previous = old[word.id] ?? { correct: 0, wrong: 0, dueAt: 0 };
+      return {
+        ...old,
+        [word.id]: {
+          ...previous,
+          familiarity,
           lastSeenAt: Date.now(),
         },
       };
@@ -240,7 +268,7 @@ export default function App() {
 
   return (
     <SafeAreaView style={styles.safe}>
-      <StatusBar style="dark" />
+      <ExpoStatusBar style="dark" />
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.app}>
         <View style={styles.header}>
           <View>
@@ -321,7 +349,12 @@ export default function App() {
             maxToRenderPerBatch={12}
             removeClippedSubviews
             renderItem={({ item }: ListRenderItemInfo<VocabularyItem>) => (
-              <VocabularyRow item={item} progress={progress[item.id]} showRomaji={showRomaji} />
+              <VocabularyRow
+                item={item}
+                onSetFamiliarity={setWordFamiliarity}
+                progress={progress[item.id]}
+                showRomaji={showRomaji}
+              />
             )}
             updateCellsBatchingPeriod={30}
             windowSize={9}
@@ -379,6 +412,10 @@ export default function App() {
               <Text style={styles.mutedText}>{currentWord.sourceBook} · {currentWord.sourceLesson}</Text>
               {currentWord.accent ? <Text style={styles.mutedText}>声调位置：{currentWord.accent}</Text> : null}
             </View>
+            <FamiliaritySelector
+              onSelect={(value) => setWordFamiliarity(currentWord, value)}
+              value={progress[currentWord.id]?.familiarity}
+            />
             <Pressable style={styles.secondaryButton} onPress={() => setShowRomaji((value) => !value)}>
               <Text style={styles.secondaryButtonText}>{showRomaji ? '隐藏罗马音' : '显示罗马音'}</Text>
             </Pressable>
@@ -495,10 +532,12 @@ function AccentKana({
 
 function VocabularyRow({
   item,
+  onSetFamiliarity,
   progress,
   showRomaji,
 }: {
   item: VocabularyItem;
+  onSetFamiliarity: (word: VocabularyItem, familiarity: Familiarity) => void;
   progress?: Progress;
   showRomaji: boolean;
 }) {
@@ -517,6 +556,46 @@ function VocabularyRow({
         <Text style={styles.mutedText}>
           已对 {progress?.correct ?? 0} · 错 {progress?.wrong ?? 0}
         </Text>
+        <FamiliaritySelector
+          compact
+          onSelect={(value) => onSetFamiliarity(item, value)}
+          value={progress?.familiarity}
+        />
+      </View>
+    </View>
+  );
+}
+
+function FamiliaritySelector({
+  compact = false,
+  onSelect,
+  value,
+}: {
+  compact?: boolean;
+  onSelect: (value: Familiarity) => void;
+  value?: Familiarity;
+}) {
+  return (
+    <View style={compact ? styles.tagRowCompact : styles.tagPanel}>
+      {!compact ? <Text style={styles.tagPanelTitle}>熟悉度标签</Text> : null}
+      <View style={styles.tagButtons}>
+        {familiarityOptions.map((option) => {
+          const active = value === option.value;
+          return (
+            <Pressable
+              key={option.value}
+              onPress={() => onSelect(option.value)}
+              style={[
+                compact ? styles.tagButtonCompact : styles.tagButton,
+                { borderColor: option.color },
+                active && { backgroundColor: option.color },
+              ]}
+            >
+              <View style={[styles.tagDot, { backgroundColor: active ? '#FFFFFF' : option.color }]} />
+              <Text style={[styles.tagButtonText, active && styles.tagButtonTextActive]}>{option.label}</Text>
+            </Pressable>
+          );
+        })}
       </View>
     </View>
   );
@@ -973,6 +1052,7 @@ const styles = StyleSheet.create({
   safe: {
     backgroundColor: '#F3F5F7',
     flex: 1,
+    paddingTop: Platform.OS === 'android' ? RNStatusBar.currentHeight ?? 0 : 0,
   },
   secondaryButton: {
     alignItems: 'center',
@@ -1043,6 +1123,60 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     marginTop: 2,
+  },
+  tagButton: {
+    alignItems: 'center',
+    borderRadius: 8,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 6,
+    justifyContent: 'center',
+    minHeight: 40,
+    paddingHorizontal: 12,
+  },
+  tagButtonCompact: {
+    alignItems: 'center',
+    borderRadius: 8,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 4,
+    minHeight: 32,
+    paddingHorizontal: 8,
+  },
+  tagButtons: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  tagButtonText: {
+    color: '#374151',
+    fontSize: 13,
+    fontWeight: '800',
+    lineHeight: 18,
+  },
+  tagButtonTextActive: {
+    color: '#FFFFFF',
+  },
+  tagDot: {
+    borderRadius: 5,
+    height: 10,
+    width: 10,
+  },
+  tagPanel: {
+    backgroundColor: '#F8FAFC',
+    borderColor: '#E1E6ED',
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: 10,
+    padding: 12,
+  },
+  tagPanelTitle: {
+    color: '#111827',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  tagRowCompact: {
+    marginTop: 4,
   },
   title: {
     color: '#111827',
