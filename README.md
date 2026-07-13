@@ -14,7 +14,7 @@
 - 假名声调高亮：浏览和背卡片时，声调范围会在假名上用蓝色底线标出。
 - 罗马音开关：浏览词库、背卡片、五十音图都可以显示或隐藏罗马音。
 - 五十音图：包含清音、浊音、半浊音，显示平假名和片假名。
-- 选择题：看到日语，选择中文。
+- 选择题：看到日语或只看假名，选择中文。
 - 输入测验：看到中文，输入日语汉字或假名。
 - 今日复习：根据答题结果做简单间隔复习。
 - 本地保存进度：答对、答错、复习到期时间和熟悉度标签会保存在手机本地。
@@ -69,35 +69,3 @@ npx eas-cli build -p android --profile preview
 ```
 
 构建完成后，Expo 会给出 APK 下载链接。下载到手机后安装即可。
-
-## 得到 iPhone 版本
-
-如果只是自己在 iPhone 上试用，可以先安装 `Expo Go`，然后运行：
-
-```bash
-npm run start
-```
-
-用 iPhone 扫描终端里的二维码即可打开测试版。
-
-如果要生成真正能装到 iPhone 上的 App，需要 Apple Developer 账号，然后构建 iOS 内测包：
-
-```bash
-npx eas-cli build -p ios --profile preview
-```
-
-这个方式会生成 iPhone 真机安装包，适合自己或少量测试用户使用。第一次构建时，EAS 会提示登录 Apple 账号并配置证书、描述文件和测试设备。
-
-如果要上 TestFlight 或 App Store，使用正式构建：
-
-```bash
-npx eas-cli build -p ios --profile production
-```
-
-构建完成后再提交到 Apple：
-
-```bash
-npx eas-cli submit -p ios
-```
-
-iPhone 不能像安卓那样直接随便安装一个 APK。非 Expo Go 的正式 App 安装，通常需要 Apple Developer 账号，并通过内测包、TestFlight 或 App Store 分发。

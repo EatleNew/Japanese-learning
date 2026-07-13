@@ -5,8 +5,6 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   FlatList,
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -19,6 +17,7 @@ import {
 } from 'react-native';
 import { basicKanaRows, kanaColumns, markKanaRows, romanizeKana } from './src/data/kana';
 import { vocabulary, type Book, type Level, type VocabularyItem } from './src/data/vocabulary';
+import { getLessonsForScope, getVocabularyByScope } from './src/data/vocabularyIndex';
 
 type ViewName = 'home' | 'browse' | 'study' | 'quiz' | 'review' | 'kana';
 type QuizMode = 'choice' | 'input';
@@ -86,11 +85,31 @@ const getDelayDays = (correctCount: number) => {
   return 14;
 };
 
-const pickChoices = (target: VocabularyItem) => {
-  const sameBook = vocabulary.filter((item) => item.id !== target.id && item.level === target.level && item.book === target.book);
-  const pool = sameBook.length >= 3 ? sameBook : vocabulary.filter((item) => item.id !== target.id);
-  const shuffled = [...pool].sort(() => Math.random() - 0.5).slice(0, 3);
-  return [...shuffled, target].sort(() => Math.random() - 0.5);
+const pickChoices = (target: VocabularyItem, sourcePool: VocabularyItem[]) => {
+  const pool = sourcePool.length >= 4 ? sourcePool : vocabulary;
+  const selected: VocabularyItem[] = [];
+  const used = new Set([target.id]);
+  const maxAttempts = pool.length * 2;
+
+  for (let attempts = 0; selected.length < 3 && attempts < maxAttempts; attempts += 1) {
+    const item = pool[Math.floor(Math.random() * pool.length)];
+    if (!item || used.has(item.id)) continue;
+
+    used.add(item.id);
+    selected.push(item);
+  }
+
+  if (selected.length < 3) {
+    for (const item of vocabulary) {
+      if (selected.length >= 3) break;
+      if (used.has(item.id)) continue;
+
+      used.add(item.id);
+      selected.push(item);
+    }
+  }
+
+  return [...selected, target].sort(() => Math.random() - 0.5);
 };
 
 const compareText = (a: string, b: string) => a.localeCompare(b, 'ja');
@@ -131,6 +150,7 @@ export default function App() {
   const [search, setSearch] = useState('');
   const [sortMode, setSortMode] = useState<SortMode>('lesson');
   const [showRomaji, setShowRomaji] = useState(false);
+  const [choiceKanaOnly, setChoiceKanaOnly] = useState(false);
   const [progressLoaded, setProgressLoaded] = useState(false);
   const [practiceFamiliarities, setPracticeFamiliarities] =
     useState<FamiliarityFilter[]>(allFamiliarityFilters);
@@ -160,17 +180,13 @@ export default function App() {
   }, [progress, progressLoaded]);
 
   const selectedWords = useMemo(
-    () =>
-      vocabulary.filter(
-        (item) =>
-          item.level === level &&
-          item.book === book &&
-          (lesson === 'all' || item.lesson === lesson),
-      ),
+    () => getVocabularyByScope(level, book, lesson),
     [book, lesson, level],
   );
 
   const visibleWords = useMemo(() => {
+    if (view !== 'browse') return [];
+
     const query = normalize(search);
     const filtered = query
       ? selectedWords.filter((item) =>
@@ -196,7 +212,7 @@ export default function App() {
       }
       return a.lesson - b.lesson || compareText(a.kana, b.kana);
     });
-  }, [search, selectedWords, sortMode, sortProgress]);
+  }, [search, selectedWords, sortMode, sortProgress, view]);
 
   const practiceWords = useMemo(() => {
     if (practiceFamiliarities.length === allFamiliarityFilters.length) return selectedWords;
@@ -214,7 +230,11 @@ export default function App() {
 
   const currentDeck = view === 'review' ? dueWords : practiceWords;
   const currentWord = currentDeck[currentIndex % Math.max(currentDeck.length, 1)];
-  const choices = useMemo(() => (currentWord ? pickChoices(currentWord) : []), [currentWord]);
+  const choices = useMemo(() => {
+    if (!currentWord || quizMode !== 'choice' || (view !== 'quiz' && view !== 'review')) return [];
+
+    return pickChoices(currentWord, getVocabularyByScope(currentWord.level, currentWord.book, 'all'));
+  }, [currentWord, quizMode, view]);
 
   const stats = useMemo(() => {
     const entries = Object.values(progress);
@@ -223,12 +243,7 @@ export default function App() {
     return { seen: entries.length, correct, due: vocabulary.length - learnedFuture };
   }, [progress]);
 
-  const lessons = useMemo(() => {
-    const values = vocabulary
-      .filter((item) => item.level === level && item.book === book)
-      .map((item) => item.lesson);
-    return Array.from(new Set(values)).sort((a, b) => a - b);
-  }, [book, level]);
+  const lessons = useMemo(() => getLessonsForScope(level, book), [book, level]);
 
   const familiarityCounts = useMemo(() => {
     const counts: Record<FamiliarityFilter, number> = {
@@ -284,6 +299,23 @@ export default function App() {
     setResult(null);
   };
 
+  const changeLevel = (nextLevel: Level) => {
+    resetPracticeState();
+    setLevel(nextLevel);
+    setLesson('all');
+  };
+
+  const changeBook = (nextBook: Book) => {
+    resetPracticeState();
+    setBook(nextBook);
+    setLesson('all');
+  };
+
+  const changeLesson = (nextLesson: number | 'all') => {
+    resetPracticeState();
+    setLesson(nextLesson);
+  };
+
   const selectAllFamiliarities = () => {
     resetPracticeState();
     setPracticeFamiliarities(allFamiliarityFilters);
@@ -328,7 +360,7 @@ export default function App() {
   return (
     <SafeAreaView style={styles.safe}>
       <ExpoStatusBar style="dark" />
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.app}>
+      <View style={styles.app}>
         <View style={styles.header}>
           <View>
             <Text style={styles.title}>Japanese Learning</Text>
@@ -356,10 +388,7 @@ export default function App() {
                   { label: '中级', value: 'intermediate' },
                 ]}
                 value={level}
-                onChange={(value) => {
-                  setLevel(value as Level);
-                  setLesson('all');
-                }}
+                onChange={(value) => changeLevel(value as Level)}
               />
               <Segment
                 options={[
@@ -367,19 +396,16 @@ export default function App() {
                   { label: '下册', value: 'lower' },
                 ]}
                 value={book}
-                onChange={(value) => {
-                  setBook(value as Book);
-                  setLesson('all');
-                }}
+                onChange={(value) => changeBook(value as Book)}
               />
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.lessonRow}>
-                <Chip active={lesson === 'all'} label="全部课" onPress={() => setLesson('all')} />
+                <Chip active={lesson === 'all'} label="全部课" onPress={() => changeLesson('all')} />
                 {lessons.map((item) => (
                   <Chip
                     key={item}
                     active={lesson === item}
                     label={`第${item}课`}
-                    onPress={() => setLesson(item)}
+                    onPress={() => changeLesson(item)}
                   />
                 ))}
               </ScrollView>
@@ -522,7 +548,10 @@ export default function App() {
             {quizMode === 'choice' ? (
               <>
                 <Text style={styles.prompt}>这个词是什么意思？</Text>
-                <Text style={styles.cardJapanese}>{currentWord.japanese}</Text>
+                <Pressable style={styles.secondaryButton} onPress={() => setChoiceKanaOnly((value) => !value)}>
+                  <Text style={styles.secondaryButtonText}>{choiceKanaOnly ? '显示日语汉字' : '只看假名'}</Text>
+                </Pressable>
+                {choiceKanaOnly ? null : <Text style={styles.cardJapanese}>{currentWord.japanese}</Text>}
                 <AccentKana value={currentWord.kana} accent={currentWord.accent} showRomaji={showRomaji} large />
                 <View style={styles.choiceList}>
                   {choices.map((item) => (
@@ -580,7 +609,7 @@ export default function App() {
             </Panel>
           </ScrollView>
         ) : null}
-      </KeyboardAvoidingView>
+      </View>
     </SafeAreaView>
   );
 }
@@ -1144,7 +1173,7 @@ const styles = StyleSheet.create({
   safe: {
     backgroundColor: '#F3F5F7',
     flex: 1,
-    paddingTop: Platform.OS === 'android' ? RNStatusBar.currentHeight ?? 0 : 0,
+    paddingTop: RNStatusBar.currentHeight ?? 0,
   },
   secondaryButton: {
     alignItems: 'center',
