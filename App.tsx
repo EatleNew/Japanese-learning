@@ -1,4 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
 import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
 import type { ReactNode } from 'react';
 import { useEffect, useMemo, useState } from 'react';
@@ -33,7 +36,16 @@ type Progress = {
   lastSeenAt?: number;
 };
 
+type UserProgressFile = {
+  app: 'Japanese-learning';
+  exportedAt: string;
+  kind: 'user-progress';
+  progress: Record<string, Progress>;
+  version: 1;
+};
+
 const STORAGE_KEY = 'jp-learning-progress-v1';
+const EXPORT_FILE_PREFIX = 'japanese-learning-progress';
 
 const levelLabel: Record<Level, string> = {
   beginner: '初级',
@@ -85,19 +97,41 @@ const getDelayDays = (correctCount: number) => {
   return 14;
 };
 
+const meaningChars = (value: string) => new Set(Array.from(value.replace(/[^\p{Script=Han}ぁ-んァ-ンーa-zA-Z0-9]/gu, '')));
+
+const scoreChoiceCandidate = (target: VocabularyItem, candidate: VocabularyItem) => {
+  let score = 0;
+  const lessonDistance = Math.abs(candidate.lesson - target.lesson);
+
+  if (candidate.level === target.level) score += 20;
+  if (candidate.book === target.book) score += 20;
+  if (candidate.lesson === target.lesson) score += 80;
+  else if (lessonDistance === 1) score += 55;
+  else if (lessonDistance === 2) score += 35;
+  else if (lessonDistance <= 4) score += 15;
+
+  if (target.partOfSpeech && candidate.partOfSpeech === target.partOfSpeech) score += 18;
+
+  const targetChars = meaningChars(target.meaning);
+  const sharedChars = Array.from(meaningChars(candidate.meaning)).filter((char) => targetChars.has(char)).length;
+  score += Math.min(sharedChars * 10, 40);
+  score += Math.max(0, 18 - Math.abs(candidate.meaning.length - target.meaning.length));
+
+  return score;
+};
+
 const pickChoices = (target: VocabularyItem, sourcePool: VocabularyItem[]) => {
   const pool = sourcePool.length >= 4 ? sourcePool : vocabulary;
-  const selected: VocabularyItem[] = [];
-  const used = new Set([target.id]);
-  const maxAttempts = pool.length * 2;
+  const ranked = pool
+    .filter((item) => item.id !== target.id)
+    .map((item) => ({
+      item,
+      score: scoreChoiceCandidate(target, item) + Math.random() * 8,
+    }))
+    .sort((a, b) => b.score - a.score);
 
-  for (let attempts = 0; selected.length < 3 && attempts < maxAttempts; attempts += 1) {
-    const item = pool[Math.floor(Math.random() * pool.length)];
-    if (!item || used.has(item.id)) continue;
-
-    used.add(item.id);
-    selected.push(item);
-  }
+  const selected = ranked.slice(0, 12).sort(() => Math.random() - 0.5).slice(0, 3).map(({ item }) => item);
+  const used = new Set([target.id, ...selected.map((item) => item.id)]);
 
   if (selected.length < 3) {
     for (const item of vocabulary) {
@@ -136,6 +170,37 @@ const isAccentIndex = (index: number, ranges: Array<{ start: number; end: number
 
 const familiarityKey = (item: VocabularyItem, progress: Record<string, Progress>): FamiliarityFilter =>
   progress[item.id]?.familiarity ?? 'untagged';
+
+const vocabularyIds = new Set(vocabulary.map((item) => item.id));
+
+const isFamiliarity = (value: unknown): value is Familiarity =>
+  value === 'red' || value === 'yellow' || value === 'green';
+
+const readProgressFile = (raw: string) => {
+  const parsed = JSON.parse(raw) as Partial<UserProgressFile>;
+  if (parsed.app !== 'Japanese-learning' || parsed.kind !== 'user-progress' || parsed.version !== 1 || !parsed.progress) {
+    throw new Error('invalid-progress-file');
+  }
+
+  const nextProgress: Record<string, Progress> = {};
+
+  Object.entries(parsed.progress).forEach(([id, item]) => {
+    if (!vocabularyIds.has(id) || !item || typeof item !== 'object') return;
+
+    const progressItem = item as Partial<Progress>;
+    const familiarity = isFamiliarity(progressItem.familiarity) ? progressItem.familiarity : undefined;
+
+    nextProgress[id] = {
+      correct: Number.isFinite(progressItem.correct) ? Number(progressItem.correct) : 0,
+      wrong: Number.isFinite(progressItem.wrong) ? Number(progressItem.wrong) : 0,
+      dueAt: Number.isFinite(progressItem.dueAt) ? Number(progressItem.dueAt) : 0,
+      ...(familiarity ? { familiarity } : {}),
+      ...(Number.isFinite(progressItem.lastSeenAt) ? { lastSeenAt: Number(progressItem.lastSeenAt) } : {}),
+    };
+  });
+
+  return nextProgress;
+};
 
 export default function App() {
   const [view, setView] = useState<ViewName>('home');
@@ -354,6 +419,72 @@ export default function App() {
     setView(targetView);
   };
 
+  const exportProgress = async () => {
+    try {
+      const targetDirectory = FileSystem.cacheDirectory ?? FileSystem.documentDirectory;
+      if (!targetDirectory) {
+        Alert.alert('导出失败', '当前设备没有可写入的本地目录。');
+        return;
+      }
+
+      const payload: UserProgressFile = {
+        app: 'Japanese-learning',
+        exportedAt: new Date().toISOString(),
+        kind: 'user-progress',
+        progress,
+        version: 1,
+      };
+      const timestamp = payload.exportedAt.replace(/[:.]/g, '-');
+      const fileUri = `${targetDirectory}${EXPORT_FILE_PREFIX}-${timestamp}.json`;
+
+      await FileSystem.writeAsStringAsync(fileUri, JSON.stringify(payload, null, 2), {
+        encoding: FileSystem.EncodingType.UTF8,
+      });
+
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(fileUri, {
+          dialogTitle: '导出日语学习记录',
+          mimeType: 'application/json',
+        });
+      } else {
+        Alert.alert('导出完成', `记录文件已生成：${fileUri}`);
+      }
+    } catch {
+      Alert.alert('导出失败', '没有成功生成用户记录文件，请稍后再试。');
+    }
+  };
+
+  const importProgress = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        copyToCacheDirectory: true,
+        type: '*/*',
+      });
+      if (result.canceled) return;
+
+      const fileUri = result.assets[0]?.uri;
+      if (!fileUri) {
+        Alert.alert('导入失败', '没有读取到文件。');
+        return;
+      }
+
+      const raw = await FileSystem.readAsStringAsync(fileUri, {
+        encoding: FileSystem.EncodingType.UTF8,
+      });
+      const importedProgress = readProgressFile(raw);
+      const importedCount = Object.keys(importedProgress).length;
+
+      setProgress((old) => ({
+        ...old,
+        ...importedProgress,
+      }));
+
+      Alert.alert('导入完成', `已导入 ${importedCount} 个单词记录。`);
+    } catch {
+      Alert.alert('导入失败', '请选择本 App 导出的用户记录 JSON 文件。');
+    }
+  };
+
   const allFamiliaritiesSelected = practiceFamiliarities.length === allFamiliarityFilters.length;
   const isPracticeView = view === 'study' || view === 'quiz' || view === 'review';
 
@@ -426,6 +557,18 @@ export default function App() {
               <Text style={styles.mutedText}>
                 当前范围有 {selectedWords.length} 个词，练习筛选后有 {practiceWords.length} 个词。
               </Text>
+            </Panel>
+
+            <Panel title="用户记录">
+              <Text style={styles.mutedText}>导出标签、答题次数和复习时间；换版本后可从文件导入恢复。</Text>
+              <View style={styles.recordActions}>
+                <Pressable style={[styles.secondaryButton, styles.recordButton]} onPress={exportProgress}>
+                  <Text style={styles.secondaryButtonText}>导出记录</Text>
+                </Pressable>
+                <Pressable style={[styles.secondaryButton, styles.recordButton]} onPress={importProgress}>
+                  <Text style={styles.secondaryButtonText}>导入记录</Text>
+                </Pressable>
+              </View>
             </Panel>
 
             <View style={styles.actionGrid}>
@@ -548,9 +691,14 @@ export default function App() {
             {quizMode === 'choice' ? (
               <>
                 <Text style={styles.prompt}>这个词是什么意思？</Text>
-                <Pressable style={styles.secondaryButton} onPress={() => setChoiceKanaOnly((value) => !value)}>
-                  <Text style={styles.secondaryButtonText}>{choiceKanaOnly ? '显示日语汉字' : '只看假名'}</Text>
-                </Pressable>
+                <View style={styles.quizToggleRow}>
+                  <Pressable style={[styles.secondaryButton, styles.quizToggleButton]} onPress={() => setChoiceKanaOnly((value) => !value)}>
+                    <Text style={styles.secondaryButtonText}>{choiceKanaOnly ? '显示日语汉字' : '只看假名'}</Text>
+                  </Pressable>
+                  <Pressable style={[styles.secondaryButton, styles.quizToggleButton]} onPress={() => setShowRomaji((value) => !value)}>
+                    <Text style={styles.secondaryButtonText}>{showRomaji ? '隐藏罗马音' : '显示罗马音'}</Text>
+                  </Pressable>
+                </View>
                 {choiceKanaOnly ? null : <Text style={styles.cardJapanese}>{currentWord.japanese}</Text>}
                 <AccentKana value={currentWord.kana} accent={currentWord.accent} showRomaji={showRomaji} large />
                 <View style={styles.choiceList}>
@@ -1131,6 +1279,24 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '700',
     textAlign: 'center',
+  },
+  quizToggleButton: {
+    flex: 1,
+    minWidth: 120,
+  },
+  quizToggleRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  recordActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  recordButton: {
+    flex: 1,
+    minWidth: 120,
   },
   resultBad: {
     backgroundColor: '#FFF1F2',
