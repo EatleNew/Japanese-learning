@@ -19,6 +19,7 @@ import {
   TextInput,
   StatusBar as RNStatusBar,
   View,
+  type LayoutChangeEvent,
   type ListRenderItemInfo,
 } from 'react-native';
 import { basicKanaRows, kanaColumns, markKanaRows, romanizeKana } from './src/data/kana';
@@ -808,7 +809,13 @@ export default function App() {
               <>
                 <Text style={styles.prompt}>看中文，手写对应的日语汉字或假名</Text>
                 <Text style={styles.cardMeaning}>{currentWord.meaning}</Text>
-                <HandwritingPrompt word={currentWord} onGrade={gradeCurrentWord} result={result} />
+                <HandwritingPrompt
+                  familiarity={progress[currentWord.id]?.familiarity}
+                  onGrade={gradeCurrentWord}
+                  onSetFamiliarity={(value) => setWordFamiliarity(currentWord, value)}
+                  result={result}
+                  word={currentWord}
+                />
               </>
             )}
 
@@ -977,20 +984,26 @@ function KanaTable({ rows, showRomaji, title }: { rows: typeof basicKanaRows; sh
 }
 
 function HandwritingPrompt({
+  familiarity,
   onGrade,
+  onSetFamiliarity,
   result,
   word,
 }: {
+  familiarity?: Familiarity;
   onGrade: (isCorrect: boolean) => void;
+  onSetFamiliarity: (value: Familiarity) => void;
   result: 'correct' | 'wrong' | null;
   word: VocabularyItem;
 }) {
   const [fullScreen, setFullScreen] = useState(false);
+  const [showAnswer, setShowAnswer] = useState(false);
   const [strokes, setStrokes] = useState<Stroke[]>([]);
   const disabled = result !== null;
 
   useEffect(() => {
     setFullScreen(false);
+    setShowAnswer(false);
     setStrokes([]);
   }, [word.id]);
 
@@ -1006,10 +1019,23 @@ function HandwritingPrompt({
         <Pressable style={[styles.secondaryButton, styles.handwritingButton]} onPress={clear}>
           <Text style={styles.secondaryButtonText}>清空</Text>
         </Pressable>
+        <Pressable style={[styles.secondaryButton, styles.handwritingButton]} onPress={() => setShowAnswer((value) => !value)}>
+          <Text style={styles.secondaryButtonText}>{showAnswer ? '隐藏答案' : '显示答案'}</Text>
+        </Pressable>
         <Pressable style={[styles.secondaryButton, styles.handwritingButton]} onPress={() => setFullScreen(true)}>
           <Text style={styles.secondaryButtonText}>横屏全屏</Text>
         </Pressable>
       </View>
+      {showAnswer || result ? (
+        <View style={styles.handwritingAnswerBox}>
+          <Text style={styles.resultText}>正确答案</Text>
+          <Text style={styles.handwritingAnswerJapanese}>{word.japanese}</Text>
+          <AccentKana value={word.kana} accent={word.accent} showRomaji large />
+          <Text style={styles.resultDetail}>{word.meaning}</Text>
+          {word.accent ? <Text style={styles.resultDetail}>声调位置：{word.accent}</Text> : null}
+        </View>
+      ) : null}
+      <FamiliaritySelector onSelect={onSetFamiliarity} value={familiarity} />
       <View style={styles.twoButtons}>
         <Pressable
           disabled={disabled}
@@ -1034,6 +1060,7 @@ function HandwritingPrompt({
           disabled={disabled}
           onClose={() => setFullScreen(false)}
           onGrade={onGrade}
+          onShowAnswer={() => setShowAnswer(true)}
           setStrokes={setStrokes}
           strokes={strokes}
           word={word}
@@ -1047,6 +1074,7 @@ function FullScreenHandwriting({
   disabled,
   onClose,
   onGrade,
+  onShowAnswer,
   setStrokes,
   strokes,
   word,
@@ -1054,6 +1082,7 @@ function FullScreenHandwriting({
   disabled: boolean;
   onClose: () => void;
   onGrade: (isCorrect: boolean) => void;
+  onShowAnswer: () => void;
   setStrokes: Dispatch<SetStateAction<Stroke[]>>;
   strokes: Stroke[];
   word: VocabularyItem;
@@ -1086,6 +1115,15 @@ function FullScreenHandwriting({
             onPress={() => setStrokes([])}
           >
             <Text style={styles.secondaryButtonText}>清空</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.secondaryButton, styles.handwritingSideButton]}
+            onPress={() => {
+              onShowAnswer();
+              onClose();
+            }}
+          >
+            <Text style={styles.secondaryButtonText}>显示答案</Text>
           </Pressable>
           <Pressable
             disabled={disabled}
@@ -1125,16 +1163,33 @@ function HandwritingBoard({
   strokes: Stroke[];
 }) {
   const currentStroke = useRef<Stroke>([]);
+  const [boardSize, setBoardSize] = useState({ height: 0, width: 0 });
+  const pointFromEvent = (event: { nativeEvent: { locationX: number; locationY: number } }) => {
+    const rawPoint = {
+      x: event.nativeEvent.locationX,
+      y: event.nativeEvent.locationY,
+    };
+
+    if (boardSize.width <= 0 || boardSize.height <= 0) return rawPoint;
+
+    return {
+      x: Math.max(0, Math.min(rawPoint.x, boardSize.width)),
+      y: Math.max(0, Math.min(rawPoint.y, boardSize.height)),
+    };
+  };
+  const updateBoardSize = (event: LayoutChangeEvent) => {
+    const { height, width } = event.nativeEvent.layout;
+    setBoardSize((old) => (old.width === width && old.height === height ? old : { height, width }));
+  };
   const panResponder = useMemo(
     () =>
       PanResponder.create({
         onMoveShouldSetPanResponder: () => !disabled,
+        onMoveShouldSetPanResponderCapture: () => !disabled,
         onStartShouldSetPanResponder: () => !disabled,
+        onStartShouldSetPanResponderCapture: () => !disabled,
         onPanResponderGrant: (event) => {
-          const point = {
-            x: event.nativeEvent.locationX,
-            y: event.nativeEvent.locationY,
-          };
+          const point = pointFromEvent(event);
           currentStroke.current = [point];
           setStrokes((old) => [...old, currentStroke.current]);
         },
@@ -1142,10 +1197,7 @@ function HandwritingBoard({
           const previous = currentStroke.current[currentStroke.current.length - 1];
           if (!previous) return;
 
-          const point = {
-            x: event.nativeEvent.locationX,
-            y: event.nativeEvent.locationY,
-          };
+          const point = pointFromEvent(event);
           const distance = Math.hypot(point.x - previous.x, point.y - previous.y);
           if (distance < 3) return;
 
@@ -1155,27 +1207,33 @@ function HandwritingBoard({
         onPanResponderRelease: () => {
           currentStroke.current = [];
         },
+        onPanResponderTerminate: () => {
+          currentStroke.current = [];
+        },
       }),
-    [disabled, setStrokes],
+    [boardSize.height, boardSize.width, disabled, setStrokes],
   );
 
   return (
     <View
       {...panResponder.panHandlers}
+      onLayout={updateBoardSize}
       style={[styles.handwritingBoard, fullScreen && styles.handwritingBoardFull]}
     >
       {strokes.length === 0 ? (
-        <Text style={styles.handwritingPlaceholder}>在这里手写</Text>
+        <Text pointerEvents="none" style={styles.handwritingPlaceholder}>在这里手写</Text>
       ) : null}
-      {strokes.map((stroke, strokeIndex) =>
-        stroke.slice(1).map((point, pointIndex) => (
-          <StrokeLine
-            key={`${strokeIndex}-${pointIndex}`}
-            from={stroke[pointIndex]}
-            to={point}
-          />
-        )),
-      )}
+      <View pointerEvents="none" style={styles.handwritingStrokeLayer}>
+        {strokes.map((stroke, strokeIndex) =>
+          stroke.slice(1).map((point, pointIndex) => (
+            <StrokeLine
+              key={`${strokeIndex}-${pointIndex}`}
+              from={stroke[pointIndex]}
+              to={point}
+            />
+          )),
+        )}
+      </View>
     </View>
   );
 }
@@ -1188,6 +1246,7 @@ function StrokeLine({ from, to }: { from: StrokePoint; to: StrokePoint }) {
 
   return (
     <View
+      pointerEvents="none"
       style={[
         styles.strokeLine,
         {
@@ -1432,7 +1491,23 @@ const styles = StyleSheet.create({
   },
   handwritingActions: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 10,
+  },
+  handwritingAnswerBox: {
+    backgroundColor: '#F8FAFC',
+    borderColor: '#DDE3EA',
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: 6,
+    padding: 12,
+  },
+  handwritingAnswerJapanese: {
+    color: '#111827',
+    fontSize: 28,
+    fontWeight: '900',
+    lineHeight: 36,
+    textAlign: 'center',
   },
   handwritingBoard: {
     alignItems: 'center',
@@ -1451,6 +1526,7 @@ const styles = StyleSheet.create({
   },
   handwritingButton: {
     flex: 1,
+    minWidth: 104,
   },
   handwritingFullBody: {
     flex: 1,
@@ -1493,6 +1569,13 @@ const styles = StyleSheet.create({
   },
   handwritingSideButton: {
     minHeight: 54,
+  },
+  handwritingStrokeLayer: {
+    bottom: 0,
+    left: 0,
+    position: 'absolute',
+    right: 0,
+    top: 0,
   },
   handwritingWrap: {
     gap: 10,
