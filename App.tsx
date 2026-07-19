@@ -1,13 +1,16 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
+import * as ScreenOrientation from 'expo-screen-orientation';
 import * as Sharing from 'expo-sharing';
 import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
-import type { ReactNode } from 'react';
-import { useEffect, useMemo, useState } from 'react';
+import type { Dispatch, ReactNode, SetStateAction } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   FlatList,
+  Modal,
+  PanResponder,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -23,10 +26,12 @@ import { vocabulary, type Book, type Level, type VocabularyItem } from './src/da
 import { getLessonsForScope, getVocabularyByScope } from './src/data/vocabularyIndex';
 
 type ViewName = 'home' | 'browse' | 'study' | 'quiz' | 'review' | 'kana';
-type QuizMode = 'choice' | 'input';
+type QuizMode = 'choice' | 'input' | 'handwriting';
 type SortMode = 'lesson' | 'kana' | 'japanese' | 'meaning' | 'mistakes';
 type Familiarity = 'red' | 'yellow' | 'green';
 type FamiliarityFilter = Familiarity | 'untagged';
+type StrokePoint = { x: number; y: number };
+type Stroke = StrokePoint[];
 
 type Progress = {
   correct: number;
@@ -402,13 +407,19 @@ export default function App() {
     setCurrentIndex((index) => (index + 1) % Math.max(currentDeck.length, 1));
   };
 
+  const gradeCurrentWord = (isCorrect: boolean) => {
+    if (!currentWord || result) return;
+
+    saveAnswer(currentWord, isCorrect);
+    setResult(isCorrect ? 'correct' : 'wrong');
+  };
+
   const checkInput = () => {
     if (!currentWord) return;
     const normalizedAnswer = normalize(answer);
     const accepted = [currentWord.japanese, currentWord.kana].map(normalize);
     const isCorrect = accepted.includes(normalizedAnswer);
-    saveAnswer(currentWord, isCorrect);
-    setResult(isCorrect ? 'correct' : 'wrong');
+    gradeCurrentWord(isCorrect);
   };
 
   const openPractice = (targetView: ViewName, mode: QuizMode = 'choice') => {
@@ -575,6 +586,7 @@ export default function App() {
               <Action title="背卡片" detail="看日语、假名、声调" onPress={() => openPractice('study')} />
               <Action title="选择题" detail="看到日语选中文" onPress={() => openPractice('quiz', 'choice')} />
               <Action title="输入测验" detail="看到中文输入日语或假名" onPress={() => openPractice('quiz', 'input')} />
+              <Action title="手写题" detail="看中文，手写日语或假名" onPress={() => openPractice('quiz', 'handwriting')} />
               <Action title="今日复习" detail={`${dueWords.length} 个到期词`} onPress={() => openPractice('review', 'input')} />
               <Action title="五十音图" detail="假名、片假名、罗马音" onPress={() => setView('kana')} />
               <Action title="浏览词库" detail="搜索、排序、看声调" onPress={() => setView('browse')} />
@@ -707,8 +719,7 @@ export default function App() {
                       key={item.id}
                       style={styles.choiceButton}
                       onPress={() => {
-                        saveAnswer(currentWord, item.id === currentWord.id);
-                        setResult(item.id === currentWord.id ? 'correct' : 'wrong');
+                        gradeCurrentWord(item.id === currentWord.id);
                       }}
                     >
                       <Text style={styles.choiceText}>{item.meaning}</Text>
@@ -716,7 +727,7 @@ export default function App() {
                   ))}
                 </View>
               </>
-            ) : (
+            ) : quizMode === 'input' ? (
               <>
                 <Text style={styles.prompt}>输入对应的日语或假名</Text>
                 <Text style={styles.cardMeaning}>{currentWord.meaning}</Text>
@@ -733,6 +744,12 @@ export default function App() {
                   <Text style={styles.primaryButtonText}>检查</Text>
                 </Pressable>
               </>
+            ) : (
+              <>
+                <Text style={styles.prompt}>看中文，手写对应的日语汉字或假名</Text>
+                <Text style={styles.cardMeaning}>{currentWord.meaning}</Text>
+                <HandwritingPrompt word={currentWord} onGrade={gradeCurrentWord} result={result} />
+              </>
             )}
 
             {result ? (
@@ -742,6 +759,10 @@ export default function App() {
                   {currentWord.japanese} · {currentWord.kana} · {currentWord.meaning}
                 </Text>
                 {currentWord.accent ? <Text style={styles.resultDetail}>声调位置：{currentWord.accent}</Text> : null}
+                <FamiliaritySelector
+                  onSelect={(value) => setWordFamiliarity(currentWord, value)}
+                  value={progress[currentWord.id]?.familiarity}
+                />
                 <Pressable style={styles.nextButton} onPress={moveNext}>
                   <Text style={styles.nextButtonText}>下一题</Text>
                 </Pressable>
@@ -892,6 +913,231 @@ function KanaTable({ rows, showRomaji, title }: { rows: typeof basicKanaRows; sh
         </View>
       ))}
     </View>
+  );
+}
+
+function HandwritingPrompt({
+  onGrade,
+  result,
+  word,
+}: {
+  onGrade: (isCorrect: boolean) => void;
+  result: 'correct' | 'wrong' | null;
+  word: VocabularyItem;
+}) {
+  const [fullScreen, setFullScreen] = useState(false);
+  const [strokes, setStrokes] = useState<Stroke[]>([]);
+  const disabled = result !== null;
+
+  useEffect(() => {
+    setFullScreen(false);
+    setStrokes([]);
+  }, [word.id]);
+
+  const clear = () => {
+    if (disabled) return;
+    setStrokes([]);
+  };
+
+  return (
+    <View style={styles.handwritingWrap}>
+      <HandwritingBoard strokes={strokes} setStrokes={setStrokes} disabled={disabled} />
+      <View style={styles.handwritingActions}>
+        <Pressable style={[styles.secondaryButton, styles.handwritingButton]} onPress={clear}>
+          <Text style={styles.secondaryButtonText}>清空</Text>
+        </Pressable>
+        <Pressable style={[styles.secondaryButton, styles.handwritingButton]} onPress={() => setFullScreen(true)}>
+          <Text style={styles.secondaryButtonText}>横屏全屏</Text>
+        </Pressable>
+      </View>
+      <View style={styles.twoButtons}>
+        <Pressable
+          disabled={disabled}
+          style={[styles.answerButton, styles.wrongButton, disabled && styles.disabledButton]}
+          onPress={() => onGrade(false)}
+        >
+          <Text style={styles.answerButtonText}>写错了</Text>
+        </Pressable>
+        <Pressable
+          disabled={disabled}
+          style={[styles.answerButton, styles.correctButton, disabled && styles.disabledButton]}
+          onPress={() => onGrade(true)}
+        >
+          <Text style={styles.answerButtonText}>写对了</Text>
+        </Pressable>
+      </View>
+      <Text style={styles.mutedText}>
+        先在区域里手写，写完后自己对照判定。当前离线版不上传笔迹。
+      </Text>
+      <Modal animationType="slide" visible={fullScreen} onRequestClose={() => setFullScreen(false)}>
+        <FullScreenHandwriting
+          disabled={disabled}
+          onClose={() => setFullScreen(false)}
+          onGrade={onGrade}
+          setStrokes={setStrokes}
+          strokes={strokes}
+          word={word}
+        />
+      </Modal>
+    </View>
+  );
+}
+
+function FullScreenHandwriting({
+  disabled,
+  onClose,
+  onGrade,
+  setStrokes,
+  strokes,
+  word,
+}: {
+  disabled: boolean;
+  onClose: () => void;
+  onGrade: (isCorrect: boolean) => void;
+  setStrokes: Dispatch<SetStateAction<Stroke[]>>;
+  strokes: Stroke[];
+  word: VocabularyItem;
+}) {
+  useEffect(() => {
+    ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE).catch(() => undefined);
+
+    return () => {
+      ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => undefined);
+    };
+  }, []);
+
+  return (
+    <SafeAreaView style={styles.handwritingFullScreen}>
+      <View style={styles.handwritingFullHeader}>
+        <View style={styles.handwritingFullTitle}>
+          <Text style={styles.prompt}>手写题</Text>
+          <Text style={styles.handwritingMeaning}>{word.meaning}</Text>
+        </View>
+        <Pressable style={styles.iconButton} onPress={onClose}>
+          <Text style={styles.iconButtonText}>×</Text>
+        </Pressable>
+      </View>
+      <View style={styles.handwritingFullBody}>
+        <HandwritingBoard fullScreen strokes={strokes} setStrokes={setStrokes} disabled={disabled} />
+        <View style={styles.handwritingSideActions}>
+          <Pressable
+            disabled={disabled}
+            style={[styles.secondaryButton, styles.handwritingSideButton, disabled && styles.disabledButton]}
+            onPress={() => setStrokes([])}
+          >
+            <Text style={styles.secondaryButtonText}>清空</Text>
+          </Pressable>
+          <Pressable
+            disabled={disabled}
+            style={[styles.answerButton, styles.wrongButton, styles.handwritingSideButton, disabled && styles.disabledButton]}
+            onPress={() => {
+              onGrade(false);
+              onClose();
+            }}
+          >
+            <Text style={styles.answerButtonText}>写错了</Text>
+          </Pressable>
+          <Pressable
+            disabled={disabled}
+            style={[styles.answerButton, styles.correctButton, styles.handwritingSideButton, disabled && styles.disabledButton]}
+            onPress={() => {
+              onGrade(true);
+              onClose();
+            }}
+          >
+            <Text style={styles.answerButtonText}>写对了</Text>
+          </Pressable>
+        </View>
+      </View>
+    </SafeAreaView>
+  );
+}
+
+function HandwritingBoard({
+  disabled,
+  fullScreen = false,
+  setStrokes,
+  strokes,
+}: {
+  disabled: boolean;
+  fullScreen?: boolean;
+  setStrokes: Dispatch<SetStateAction<Stroke[]>>;
+  strokes: Stroke[];
+}) {
+  const currentStroke = useRef<Stroke>([]);
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: () => !disabled,
+        onStartShouldSetPanResponder: () => !disabled,
+        onPanResponderGrant: (event) => {
+          const point = {
+            x: event.nativeEvent.locationX,
+            y: event.nativeEvent.locationY,
+          };
+          currentStroke.current = [point];
+          setStrokes((old) => [...old, currentStroke.current]);
+        },
+        onPanResponderMove: (event) => {
+          const previous = currentStroke.current[currentStroke.current.length - 1];
+          if (!previous) return;
+
+          const point = {
+            x: event.nativeEvent.locationX,
+            y: event.nativeEvent.locationY,
+          };
+          const distance = Math.hypot(point.x - previous.x, point.y - previous.y);
+          if (distance < 3) return;
+
+          currentStroke.current = [...currentStroke.current, point];
+          setStrokes((old) => [...old.slice(0, -1), currentStroke.current]);
+        },
+        onPanResponderRelease: () => {
+          currentStroke.current = [];
+        },
+      }),
+    [disabled, setStrokes],
+  );
+
+  return (
+    <View
+      {...panResponder.panHandlers}
+      style={[styles.handwritingBoard, fullScreen && styles.handwritingBoardFull]}
+    >
+      {strokes.length === 0 ? (
+        <Text style={styles.handwritingPlaceholder}>在这里手写</Text>
+      ) : null}
+      {strokes.map((stroke, strokeIndex) =>
+        stroke.slice(1).map((point, pointIndex) => (
+          <StrokeLine
+            key={`${strokeIndex}-${pointIndex}`}
+            from={stroke[pointIndex]}
+            to={point}
+          />
+        )),
+      )}
+    </View>
+  );
+}
+
+function StrokeLine({ from, to }: { from: StrokePoint; to: StrokePoint }) {
+  const length = Math.hypot(to.x - from.x, to.y - from.y);
+  if (length < 1) return null;
+
+  const angle = Math.atan2(to.y - from.y, to.x - from.x);
+
+  return (
+    <View
+      style={[
+        styles.strokeLine,
+        {
+          left: (from.x + to.x) / 2 - length / 2,
+          top: (from.y + to.y) / 2 - 2,
+          transform: [{ rotateZ: `${angle}rad` }],
+          width: length,
+        },
+      ]}
+    />
   );
 }
 
@@ -1089,6 +1335,9 @@ const styles = StyleSheet.create({
   correctButton: {
     backgroundColor: '#15803D',
   },
+  disabledButton: {
+    opacity: 0.55,
+  },
   example: {
     color: '#111827',
     fontSize: 17,
@@ -1120,6 +1369,73 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: 18,
     paddingVertical: 14,
+  },
+  handwritingActions: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  handwritingBoard: {
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderColor: '#AAB4C0',
+    borderRadius: 8,
+    borderWidth: 1,
+    height: 260,
+    justifyContent: 'center',
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  handwritingBoardFull: {
+    flex: 1,
+    height: undefined,
+  },
+  handwritingButton: {
+    flex: 1,
+  },
+  handwritingFullBody: {
+    flex: 1,
+    flexDirection: 'row',
+    gap: 12,
+    padding: 12,
+  },
+  handwritingFullHeader: {
+    alignItems: 'center',
+    borderBottomColor: '#DDE3EA',
+    borderBottomWidth: 1,
+    flexDirection: 'row',
+    gap: 12,
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  handwritingFullScreen: {
+    backgroundColor: '#F3F5F7',
+    flex: 1,
+  },
+  handwritingFullTitle: {
+    flex: 1,
+  },
+  handwritingMeaning: {
+    color: '#111827',
+    fontSize: 20,
+    fontWeight: '800',
+    lineHeight: 28,
+  },
+  handwritingPlaceholder: {
+    color: '#A0A8B3',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  handwritingSideActions: {
+    gap: 10,
+    justifyContent: 'center',
+    width: 132,
+  },
+  handwritingSideButton: {
+    minHeight: 54,
+  },
+  handwritingWrap: {
+    gap: 10,
   },
   iconButton: {
     alignItems: 'center',
@@ -1404,6 +1720,12 @@ const styles = StyleSheet.create({
   statsRow: {
     flexDirection: 'row',
     gap: 10,
+  },
+  strokeLine: {
+    backgroundColor: '#111827',
+    borderRadius: 2,
+    height: 4,
+    position: 'absolute',
   },
   subtitle: {
     color: '#667085',
