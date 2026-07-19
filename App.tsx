@@ -27,6 +27,7 @@ import { getLessonsForScope, getVocabularyByScope } from './src/data/vocabularyI
 
 type ViewName = 'home' | 'browse' | 'study' | 'quiz' | 'review' | 'kana';
 type QuizMode = 'choice' | 'input' | 'handwriting';
+type QuizScope = 'unseen' | 'all';
 type SortMode = 'lesson' | 'kana' | 'japanese' | 'meaning' | 'mistakes';
 type Familiarity = 'red' | 'yellow' | 'green';
 type FamiliarityFilter = Familiarity | 'untagged';
@@ -153,6 +154,17 @@ const pickChoices = (target: VocabularyItem, sourcePool: VocabularyItem[]) => {
 
 const compareText = (a: string, b: string) => a.localeCompare(b, 'ja');
 
+const shuffleWords = (items: VocabularyItem[]) => {
+  const next = [...items];
+
+  for (let index = next.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [next[index], next[swapIndex]] = [next[swapIndex], next[index]];
+  }
+
+  return next;
+};
+
 const parseAccentRanges = (accent: string, length: number) => {
   if (!accent) return [];
 
@@ -177,6 +189,7 @@ const familiarityKey = (item: VocabularyItem, progress: Record<string, Progress>
   progress[item.id]?.familiarity ?? 'untagged';
 
 const vocabularyIds = new Set(vocabulary.map((item) => item.id));
+const vocabularyById = new Map(vocabulary.map((item) => [item.id, item]));
 
 const isFamiliarity = (value: unknown): value is Familiarity =>
   value === 'red' || value === 'yellow' || value === 'green';
@@ -215,6 +228,8 @@ export default function App() {
   const [progress, setProgress] = useState<Record<string, Progress>>({});
   const [currentIndex, setCurrentIndex] = useState(0);
   const [quizMode, setQuizMode] = useState<QuizMode>('choice');
+  const [quizScope, setQuizScope] = useState<QuizScope>('unseen');
+  const [sessionWordIds, setSessionWordIds] = useState<string[]>([]);
   const [answer, setAnswer] = useState('');
   const [result, setResult] = useState<'correct' | 'wrong' | null>(null);
   const [search, setSearch] = useState('');
@@ -290,6 +305,20 @@ export default function App() {
     return selectedWords.filter((item) => practiceFamiliarities.includes(familiarityKey(item, progress)));
   }, [practiceFamiliarities, progress, selectedWords]);
 
+  const unpracticedWords = useMemo(
+    () =>
+      practiceWords.filter((item) => {
+        const itemProgress = progress[item.id];
+        return !itemProgress || ((itemProgress.correct ?? 0) === 0 && (itemProgress.wrong ?? 0) === 0 && !itemProgress.lastSeenAt);
+      }),
+    [practiceWords, progress],
+  );
+
+  const quizCandidateWords = useMemo(() => {
+    if (quizScope === 'all') return practiceWords;
+    return unpracticedWords.length > 0 ? unpracticedWords : practiceWords;
+  }, [practiceWords, quizScope, unpracticedWords]);
+
   const dueWords = useMemo(() => {
     if (view !== 'home' && view !== 'review') return practiceWords;
 
@@ -298,7 +327,12 @@ export default function App() {
     return due.length > 0 ? due : practiceWords;
   }, [practiceWords, progress, view]);
 
-  const currentDeck = view === 'review' ? dueWords : practiceWords;
+  const sessionWords = useMemo(
+    () => sessionWordIds.map((id) => vocabularyById.get(id)).filter((item): item is VocabularyItem => Boolean(item)),
+    [sessionWordIds],
+  );
+
+  const currentDeck = view === 'review' ? dueWords : view === 'quiz' ? (sessionWords.length > 0 ? sessionWords : quizCandidateWords) : practiceWords;
   const currentWord = currentDeck[currentIndex % Math.max(currentDeck.length, 1)];
   const choices = useMemo(() => {
     if (!currentWord || quizMode !== 'choice' || (view !== 'quiz' && view !== 'review')) return [];
@@ -341,6 +375,7 @@ export default function App() {
         [word.id]: {
           ...previous,
           correct: nextCorrect,
+          familiarity: isCorrect ? 'green' : 'red',
           wrong: nextWrong,
           dueAt: Date.now() + delayDays * 24 * 60 * 60 * 1000,
           lastSeenAt: Date.now(),
@@ -367,6 +402,7 @@ export default function App() {
     setAnswer('');
     setCurrentIndex(0);
     setResult(null);
+    setSessionWordIds([]);
   };
 
   const changeLevel = (nextLevel: Level) => {
@@ -401,6 +437,11 @@ export default function App() {
     });
   };
 
+  const changeQuizScope = (nextScope: QuizScope) => {
+    resetPracticeState();
+    setQuizScope(nextScope);
+  };
+
   const moveNext = () => {
     setAnswer('');
     setResult(null);
@@ -427,6 +468,7 @@ export default function App() {
     setCurrentIndex(0);
     setAnswer('');
     setResult(null);
+    setSessionWordIds(targetView === 'quiz' ? shuffleWords(quizCandidateWords).map((item) => item.id) : []);
     setView(targetView);
   };
 
@@ -564,6 +606,24 @@ export default function App() {
                     />
                   ))}
                 </ScrollView>
+              </View>
+              <View style={styles.filterBlock}>
+                <Text style={styles.filterTitle}>测验范围</Text>
+                <View style={styles.scopeRow}>
+                  <Chip
+                    active={quizScope === 'unseen'}
+                    label={`只考没练过 ${unpracticedWords.length}`}
+                    onPress={() => changeQuizScope('unseen')}
+                  />
+                  <Chip
+                    active={quizScope === 'all'}
+                    label={`全部 ${practiceWords.length}`}
+                    onPress={() => changeQuizScope('all')}
+                  />
+                </View>
+                <Text style={styles.mutedText}>
+                  选择题、输入测验和手写题会按这个范围随机出题。
+                </Text>
               </View>
               <Text style={styles.mutedText}>
                 当前范围有 {selectedWords.length} 个词，练习筛选后有 {practiceWords.length} 个词。
@@ -1669,6 +1729,11 @@ const styles = StyleSheet.create({
     color: '#14213D',
     fontSize: 16,
     fontWeight: '800',
+  },
+  scopeRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
   },
   segment: {
     backgroundColor: '#EDF1F5',
